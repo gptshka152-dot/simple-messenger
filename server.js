@@ -26,15 +26,197 @@ cloudinary.config({
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-// Подключение к PostgreSQL
+// Подключение к PostgreSQL с повторными попытками
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-const JWT_SECRET = 'your_random_secret_key_123'; // Измените на случайный текст
+async function connectWithRetry(maxRetries = 5, delay = 3000) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await pool.connect();
+      console.log('Successfully connected to database');
+      return true;
+    } catch (err) {
+      console.error(`Connection attempt ${i + 1} failed: ${err.message}`);
+      if (i === maxRetries - 1) {
+        console.error('Max retries reached. Could not connect to database.');
+        throw err;
+      }
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
 
 // Создание таблиц
+async function createTables() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(50) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        avatar_url TEXT
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
+        from_user_id INT NOT NULL,
+        to_user_id INT NOT NULL,
+        content TEXT,
+        file_url TEXT,
+        file_name TEXT,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log('Tables created successfully');
+  } catch (err) {
+    console.error('Error creating tables:', err.message);
+    throw err;
+  }
+}
+
+// Инициализация подключения и создание таблиц
+(async () => {
+  try {
+    await connectWithRetry();
+    await createTables();
+  } catch (err) {
+    console.error('Failed to initialize database:', err.message);
+    process.exit(1); // Завершаем процесс, если не удалось подключиться
+  }
+})();
+
+const JWT_SECRET = 'your_random_secret_key_123'; // Измените на случайный текст
+
+// Регистрация
+app.post('/register', async (req, res) => {
+  const { username, password } = req.body;
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await pool.query('INSERT INTO users (username, password) VALUES ($1, $2)', [username, hashedPassword]);
+    res.status(201).send('User registered');
+  } catch (err) {
+    res.status(400).send('Username taken');
+  }
+});
+
+// Вход
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  try {
+    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    if (result.rows.length === 0) return res.status(400).send('User not found');
+    const user = result.rows[0];
+    if (await bcrypt.compare(password, user.password)) {
+      const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET);
+      res.json({ token, avatar_url: user.avatar_url });
+    } else {
+      res.status(400).send('Wrong password');
+    }
+  } catch (err) {
+    res.status(500).send('Error');
+  }
+});
+
+// Загрузка аватарки
+app.post('/upload-avatar', upload.single('avatar'), authenticateToken, async (req, res) => {
+  try {
+    const result = await cloudinary.uploader.upload_stream({ resource_type: 'image' }, async (error, result) => {
+      if (error) return res.status(500).send('Upload failed');
+      await pool.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [result.secure_url, req.user.id]);
+      res.json({ avatar_url: result.secure_url });
+    }).end(req.file.buffer);
+  } catch (err) {
+    res.status(500).send('Server error');
+  }
+});
+
+// Загрузка файла в чат
+app.post('/upload-file', upload.single('file'), authenticateToken, async (req, res) => {
+  try {
+    const result = await cloudinary.uploader.upload_stream({ resource_type: 'auto' }, (error, result) => {
+      if (error) return res.status(500).send('Upload failed');
+      res.json({ file_url: result.secure_url, file_name: req.file.originalname });
+    }).end(req.file.buffer);
+  } catch (err) {
+    res.status(500).send('Server error');
+  }
+});
+
+// Поиск пользователей
+app.get('/search-users', authenticateToken, async (req, res) => {
+  const { query } = req.query;
+  const result = await pool.query('SELECT id, username, avatar_url FROM users WHERE username ILIKE $1 AND id != $2', [`%${query}%`, req.user.id]);
+  res.json(result.rows);
+});
+
+// Получить историю сообщений
+app.get('/messages/:userId', authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+  const fromUserId = req.user.id;
+  const result = await pool.query(
+    'SELECT m.*, u1.username as from_username, u2.username as to_username, u1.avatar_url as from_avatar, u2.avatar_url as to_avatar ' +
+    'FROM messages m ' +
+    'JOIN users u1 ON m.from_user_id = u1.id ' +
+    'JOIN users u2 ON m.to_user_id = u2.id ' +
+    'WHERE (from_user_id = $1 AND to_user_id = $2) OR (from_user_id = $2 AND to_user_id = $1) ORDER BY timestamp',
+    [fromUserId, userId]
+  );
+  res.json(result.rows);
+});
+
+// Получить список чатов
+app.get('/chats', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const result = await pool.query(
+    'SELECT DISTINCT ON (u.id) u.id, u.username, u.avatar_url, m.timestamp ' +
+    'FROM users u ' +
+    'JOIN messages m ON (m.from_user_id = u.id AND m.to_user_id = $1) OR (m.from_user_id = $1 AND m.to_user_id = u.id) ' +
+    'ORDER BY u.id, m.timestamp DESC',
+    [userId]
+  );
+  res.json(result.rows);
+});
+
+// Middleware для проверки токена
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).send('No token');
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).send('Invalid token');
+    req.user = user;
+    next();
+  });
+}
+
+// Socket.io для реального времени
+io.on('connection', (socket) => {
+  socket.on('join', (userId) => {
+    socket.join(userId);
+  });
+
+  socket.on('private message', async ({ from, to, content, file_url, file_name }) => {
+    const result = await pool.query(
+      'INSERT INTO messages (from_user_id, to_user_id, content, file_url, file_name) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [from, to, content, file_url, file_name]
+    );
+    const message = result.rows[0];
+    io.to(to).emit('private message', {
+      from,
+      content,
+      file_url,
+      file_name,
+      timestamp: message.timestamp,
+      from_username: (await pool.query('SELECT username FROM users WHERE id = $1', [from])).rows[0].username,
+      from_avatar: (await pool.query('SELECT avatar_url FROM users WHERE id = $1', [from])).rows[0].avatar_url
+    });
+  });
+});
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));// Создание таблиц
 pool.query(`
   CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
