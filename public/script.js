@@ -1,7 +1,7 @@
 const socket = io();
 let token = localStorage.getItem('token');
 let currentChatUserId = null;
-let userAvatar = localStorage.getItem('avatar_url');
+let currentUser = null;
 
 if (token) {
   showMessenger();
@@ -31,10 +31,155 @@ async function login() {
   if (response.ok) {
     const data = await response.json();
     token = data.token;
-    userAvatar = data.avatar_url;
+    currentUser = { avatar_url: data.avatar_url };
     localStorage.setItem('token', token);
-    localStorage.setItem('avatar_url', userAvatar);
     showMessenger();
+    loadChats();
+  } else {
+    alert(await response.text());
+  }
+}
+
+function showMessenger() {
+  document.getElementById('auth').style.display = 'none';
+  document.getElementById('messenger').style.display = 'flex';
+  socket.emit('join', getUserIdFromToken());
+}
+
+async function loadChats() {
+  const response = await fetch('/chats', {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const chats = await response.json();
+  const chatList = document.getElementById('chat-list');
+  chatList.innerHTML = '';
+  chats.forEach(chat => {
+    const div = document.createElement('div');
+    div.className = 'chat-item';
+    div.innerHTML = `<img src="${chat.avatar_url || 'https://via.placeholder.com/40'}" alt="Avatar">
+                     <span>${chat.username}</span>`;
+    div.onclick = () => startChat(chat.id, chat.username, chat.avatar_url);
+    chatList.appendChild(div);
+  });
+}
+
+async function searchUsers() {
+  const query = document.getElementById('search').value;
+  if (!query) return loadChats();
+  const response = await fetch(`/search-users?query=${query}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const users = await response.json();
+  const chatList = document.getElementById('chat-list');
+  chatList.innerHTML = '';
+  users.forEach(user => {
+    const div = document.createElement('div');
+    div.className = 'chat-item';
+    div.innerHTML = `<img src="${user.avatar_url || 'https://via.placeholder.com/40'}" alt="Avatar">
+                     <span>${user.username}</span>`;
+    div.onclick = () => startChat(user.id, user.username, user.avatar_url);
+    chatList.appendChild(div);
+  });
+}
+
+async function startChat(userId, username, avatar_url) {
+  currentChatUserId = userId;
+  document.getElementById('chat-with').innerHTML = `<img src="${avatar_url || 'https://via.placeholder.com/40'}" alt="Avatar">${username}`;
+  const response = await fetch(`/messages/${userId}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const messages = await response.json();
+  const msgDiv = document.getElementById('messages');
+  msgDiv.innerHTML = '';
+  messages.forEach(msg => {
+    const isMine = msg.from_user_id === getUserIdFromToken();
+    const div = document.createElement('div');
+    div.className = `message ${isMine ? 'mine' : 'theirs'}`;
+    let content = '';
+    if (msg.content) content += `<p>${msg.content}</p>`;
+    if (msg.file_url) {
+      if (msg.file_url.includes('image')) {
+        content += `<img src="${msg.file_url}" alt="Attachment">`;
+      } else {
+        content += `<div class="file"><a href="${msg.file_url}" target="_blank">${msg.file_name}</a></div>`;
+      }
+    }
+    div.innerHTML = `${content}<div class="timestamp">${new Date(msg.timestamp).toLocaleTimeString()}</div>`;
+    msgDiv.appendChild(div);
+  });
+  msgDiv.scrollTop = msgDiv.scrollHeight;
+}
+
+async function sendMessage() {
+  const content = document.getElementById('message-input').value;
+  const fileInput = document.getElementById('file-upload');
+  let file_url = null, file_name = null;
+  if (fileInput.files.length > 0) {
+    const fileData = await uploadFile(fileInput.files[0]);
+    file_url = fileData.file_url;
+    file_name = fileData.file_name;
+    fileInput.value = '';
+  }
+  if (!content && !file_url) return;
+  socket.emit('private message', { from: getUserIdFromToken(), to: currentChatUserId, content, file_url, file_name });
+  document.getElementById('message-input').value = '';
+  const msgDiv = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'message mine';
+  let messageContent = '';
+  if (content) messageContent += `<p>${content}</p>`;
+  if (file_url) {
+    if (file_url.includes('image')) {
+      messageContent += `<img src="${file_url}" alt="Attachment">`;
+    } else {
+      messageContent += `<div class="file"><a href="${file_url}" target="_blank">${file_name}</a></div>`;
+    }
+  }
+  div.innerHTML = `${messageContent}<div class="timestamp">${new Date().toLocaleTimeString()}</div>`;
+  msgDiv.appendChild(div);
+  msgDiv.scrollTop = msgDiv.scrollHeight;
+}
+
+socket.on('private message', ({ from, content, file_url, file_name, timestamp, from_username, from_avatar }) => {
+  if (from === currentChatUserId) {
+    const msgDiv = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = 'message theirs';
+    let messageContent = '';
+    if (content) messageContent += `<p>${content}</p>`;
+    if (file_url) {
+      if (file_url.includes('image')) {
+        messageContent += `<img src="${file_url}" alt="Attachment">`;
+      } else {
+        messageContent += `<div class="file"><a href="${file_url}" target="_blank">${file_name}</a></div>`;
+      }
+    }
+    div.innerHTML = `${messageContent}<div class="timestamp">${new Date(timestamp).toLocaleTimeString()}</div>`;
+    msgDiv.appendChild(div);
+    msgDiv.scrollTop = msgDiv.scrollHeight;
+  }
+});
+
+function toggleMenu() {
+  const menu = document.getElementById('menu');
+  menu.classList.toggle('open');
+}
+
+function toggleTheme() {
+  const isDark = document.getElementById('theme-toggle').checked;
+  document.body.className = isDark ? 'dark-theme' : 'light-theme';
+  localStorage.setItem('theme', isDark ? 'dark' : 'light');
+}
+
+function logout() {
+  localStorage.removeItem('token');
+  location.reload();
+}
+
+function getUserIdFromToken() {
+  const payload = JSON.parse(atob(token.split('.')[1]));
+  return payload.id;
+}    showMessenger();
     loadChats();
   } else {
     alert(await response.text());
