@@ -3,12 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Простой Мессенджер</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <title>Мессенджер</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-  <div id="auth">
+<body class="dark-theme">
+  <div id="auth" class="auth-container">
     <h1>Вход / Регистрация</h1>
     <input id="username" placeholder="Никнейм">
     <input id="password" type="password" placeholder="Пароль">
@@ -16,25 +15,34 @@
     <button onclick="login()">Вход</button>
   </div>
   <div id="messenger" style="display:none;">
-    <div id="sidebar">
+    <div class="sidebar">
       <div class="sidebar-header">
-        <i class="fas fa-bars" onclick="toggleSettings()"></i>
-        <input id="search" placeholder="Поиск по нику" oninput="searchUsers()">
+        <button onclick="toggleMenu()">☰</button>
+        <input id="search" placeholder="Поиск чатов" oninput="searchUsers()">
       </div>
-      <ul id="chat-list"></ul>
+      <div id="chat-list"></div>
     </div>
-    <div id="chat">
-      <div class="chat-header">
-        <span id="chat-with"></span>
-        <img id="chat-avatar" src="" alt="" style="display:none;">
-      </div>
-      <div id="messages"></div>
+    <div class="sidebar-menu" id="menu">
+      <h2>Настройки</h2>
+      <label>Тёмная тема: <input type="checkbox" id="theme-toggle" checked onchange="toggleTheme()"></label>
+      <label>Аватар: <input type="file" id="avatar-upload" accept="image/*"></label>
+      <button onclick="logout()">Выйти</button>
+    </div>
+    <div class="chat-container">
+      <div class="chat-header" id="chat-with"></div>
+      <div id="messages" class="messages"></div>
       <div class="chat-input">
+        <input type="file" id="file-upload" accept="image/*,application/pdf">
         <input id="message-input" placeholder="Сообщение">
-        <label for="file-input" class="file-upload">
-          <i class="fas fa-paperclip"></i>
-        </label>
-        <input id="file-input" type="file" accept="image/*,.pdf,.doc,.docx" style="display:none;" onchange="uploadFile()">
+        <button onclick="sendMessage()">➤</button>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+  <script src="script.js"></script>
+  <script src="uploads.js"></script>
+</body>
+</html>        <input id="file-input" type="file" accept="image/*,.pdf,.doc,.docx" style="display:none;" onchange="uploadFile()">
         <button onclick="sendMessage()">Отправить</button>
       </div>
     </div>
